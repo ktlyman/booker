@@ -9,24 +9,29 @@ A PitchBook data integration tool that imports company, deal, investor, and peop
 - **AI Query Interface** - Ask natural-language questions about your data using Claude with tool-calling (RAG-style)
 - **Web Dashboard** - FastAPI-powered single-page app for browsing data, managing watch lists, and searching across entities
 - **Rich CLI** - Full-featured command-line interface with formatted terminal output
+- **Flexible Auth** - Authenticate via PitchBook API key or Chrome session cookies
 
 ## Quick Start
 
 ### Prerequisites
 
 - Python 3.11+
-- A [PitchBook API](https://pitchbook.com) key
+- A PitchBook account (API key or browser login)
 - An [Anthropic API](https://console.anthropic.com) key (for the query interface)
 
 ### Installation
 
 ```bash
+# Basic installation (API key auth)
 pip install -e .
+
+# With Chrome cookie auth support
+pip install -e ".[cookies]"
 ```
 
 ### Configuration
 
-Copy `.env.examples` to `.env` and fill in your API keys:
+Copy `.env.examples` to `.env` and configure:
 
 ```bash
 cp .env.examples .env
@@ -34,14 +39,43 @@ cp .env.examples .env
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `PITCHBOOK_API_KEY` | Yes | - | PitchBook API key |
-| `PITCHBOOK_ANTHROPIC_API_KEY` | Yes | - | Anthropic API key for Claude |
+| `PITCHBOOK_AUTH_MODE` | No | `auto` | Auth mode: `auto`, `api_key`, or `cookies` |
+| `PITCHBOOK_API_KEY` | For `api_key` mode | - | PitchBook API key |
+| `PITCHBOOK_ANTHROPIC_API_KEY` | For queries | - | Anthropic API key for Claude |
 | `PITCHBOOK_API_BASE_URL` | No | `https://api.pitchbook.com/v2` | API base URL |
+| `PITCHBOOK_WEB_BASE_URL` | No | `https://pitchbook.com` | Website URL (cookie auth) |
 | `PITCHBOOK_API_TIMEOUT` | No | `30` | Request timeout (seconds) |
 | `PITCHBOOK_API_MAX_RETRIES` | No | `3` | Max retry attempts |
 | `PITCHBOOK_DB_PATH` | No | `pitchbook_data.db` | SQLite database path |
 | `PITCHBOOK_POLL_INTERVAL_SECONDS` | No | `300` | Listener poll interval (seconds) |
 | `PITCHBOOK_CLAUDE_MODEL` | No | `claude-sonnet-4-20250514` | Claude model for queries |
+
+### Authentication
+
+The tool supports two authentication methods:
+
+**API Key** (requires PitchBook API subscription):
+```bash
+export PITCHBOOK_API_KEY=your-key-here
+pitchbook import "Anthropic"
+```
+
+**Chrome Cookies** (uses your existing PitchBook login):
+```bash
+pip install -e ".[cookies]"
+# Log into pitchbook.com in Chrome, then:
+pitchbook --auth cookies import "Anthropic"
+```
+
+In `auto` mode (default), the API key is used if set, otherwise cookies are extracted from Chrome.
+
+Manage auth with:
+```bash
+pitchbook auth status    # Show current auth config
+pitchbook auth test      # Verify auth works
+pitchbook auth cookies   # List cookies found in Chrome
+pitchbook auth probe     # Discover working API endpoints
+```
 
 ### Usage
 
@@ -88,9 +122,10 @@ mypy src/
 
 ```
 src/pitchbook/
-├── config.py           # Settings via pydantic-settings
+├── config.py           # Settings via pydantic-settings, AuthMode enum
 ├── models.py           # Pydantic data models (Company, Deal, Investor, Fund, Person)
-├── client.py           # Async PitchBook API client with retries
+├── client.py           # Async PitchBook API client (API key + cookie auth)
+├── cookies.py          # Chrome cookie extraction via rookiepy
 ├── store.py            # SQLAlchemy ORM + SQLite persistence
 ├── listener.py         # Change detection polling loop
 ├── importer.py         # Bulk import orchestration

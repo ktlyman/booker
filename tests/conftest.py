@@ -25,6 +25,7 @@ def settings(tmp_db: Path) -> Settings:
     """Settings with a fake API key pointing to a temp database."""
     return Settings(
         api_key="test-key-not-real",
+        auth_mode="api_key",
         db_path=tmp_db,
         anthropic_api_key="test-anthropic-key",
     )

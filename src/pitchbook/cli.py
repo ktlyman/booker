@@ -8,6 +8,7 @@ Commands:
     pitchbook status   — Show what's in the local database
     pitchbook refresh  — Re-import all stored companies with fresh data
     pitchbook serve    — Start the web dashboard
+    pitchbook auth     — Manage authentication (status, test, cookies, probe)
 """
 
 from __future__ import annotations
@@ -26,12 +27,16 @@ from pitchbook.store import PitchBookStore
 console = Console()
 
 
-def _get_settings() -> Settings:
+def _get_settings(**overrides: str) -> Settings:
     try:
-        return Settings()  # type: ignore[call-arg]
+        return Settings(**overrides)  # type: ignore[arg-type]
     except Exception as exc:
         console.print(f"[red]Configuration error:[/red] {exc}")
-        console.print("Set PITCHBOOK_API_KEY and other env vars. See .env.example")
+        console.print(
+            "Set PITCHBOOK_API_KEY for API key auth, or use "
+            "--auth=cookies to authenticate via Chrome cookies.\n"
+            "See .env.examples for all options."
+        )
         sys.exit(1)
 
 
@@ -42,7 +47,14 @@ def _get_settings() -> Settings:
 
 @click.group()
 @click.option("--verbose", "-v", is_flag=True, help="Enable debug logging")
-def main(verbose: bool) -> None:
+@click.option(
+    "--auth",
+    type=click.Choice(["auto", "api_key", "cookies"]),
+    default=None,
+    help="Override authentication mode",
+)
+@click.pass_context
+def main(ctx: click.Context, verbose: bool, auth: str | None) -> None:
     """PitchBook data listener, importer, and agent query interface."""
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
@@ -50,6 +62,19 @@ def main(verbose: bool) -> None:
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
         datefmt="%H:%M:%S",
     )
+    ctx.ensure_object(dict)
+    if auth:
+        ctx.obj["auth_mode"] = auth
+
+
+def _settings_from_ctx() -> Settings:
+    """Build Settings, applying any CLI auth override from the click context."""
+    ctx = click.get_current_context()
+    overrides: dict[str, str] = {}
+    auth_mode = ctx.obj.get("auth_mode") if ctx.obj else None
+    if auth_mode:
+        overrides["auth_mode"] = auth_mode
+    return _get_settings(**overrides)
 
 
 # ---------------------------------------------------------------------------
@@ -68,7 +93,7 @@ def import_cmd(companies: tuple[str, ...], by_id: bool, no_watch: bool) -> None:
     """
     from pitchbook.importer import PitchBookImporter
 
-    settings = _get_settings()
+    settings = _settings_from_ctx()
 
     async def _run() -> None:
         async with PitchBookImporter(settings) as importer:
@@ -100,7 +125,7 @@ def listen_cmd() -> None:
     """Start the listener that polls PitchBook for watched company changes."""
     from pitchbook.listener import PitchBookListener
 
-    settings = _get_settings()
+    settings = _settings_from_ctx()
     listener = PitchBookListener(settings)
 
     def _on_change(event: object) -> None:
@@ -131,7 +156,7 @@ def query_cmd(question: str) -> None:
     """
     from pitchbook.agent_interface import PitchBookAgentInterface
 
-    settings = _get_settings()
+    settings = _settings_from_ctx()
     interface = PitchBookAgentInterface(settings)
 
     async def _run() -> None:
@@ -160,7 +185,7 @@ def watch_cmd(action: str, args: tuple[str, ...]) -> None:
         pitchbook watch add PB-ID "Company Name"
         pitchbook watch remove PB-ID
     """
-    settings = _get_settings()
+    settings = _settings_from_ctx()
     store = PitchBookStore(settings.db_path)
 
     if action == "list":
@@ -198,7 +223,7 @@ def watch_cmd(action: str, args: tuple[str, ...]) -> None:
 @main.command("status")
 def status_cmd() -> None:
     """Show a summary of what's in the local PitchBook database."""
-    settings = _get_settings()
+    settings = _settings_from_ctx()
     store = PitchBookStore(settings.db_path)
 
     companies = store.list_companies()
@@ -237,7 +262,7 @@ def refresh_cmd() -> None:
     """Re-import fresh data for all companies in the local store."""
     from pitchbook.importer import PitchBookImporter
 
-    settings = _get_settings()
+    settings = _settings_from_ctx()
 
     async def _run() -> None:
         async with PitchBookImporter(settings) as importer:
@@ -245,7 +270,7 @@ def refresh_cmd() -> None:
         console.print(f"[bold green]Refresh complete[/bold green]: {stats.total} entities updated")
         if stats.errors:
             for err in stats.errors:
-                console.print(f"  [yellow]⚠ {err}[/yellow]")
+                console.print(f"  [yellow]Warning: {err}[/yellow]")
 
     asyncio.run(_run())
 
@@ -264,11 +289,130 @@ def serve_cmd(host: str, port: int) -> None:
 
     from pitchbook.web import create_app
 
-    _get_settings()  # validate config early
+    _settings_from_ctx()  # validate config early
     console.print(f"[bold]Starting PitchBook dashboard at http://{host}:{port}[/bold]")
 
     app = create_app()
     uvicorn.run(app, host=host, port=port, log_level="info")
+
+
+# ---------------------------------------------------------------------------
+# auth
+# ---------------------------------------------------------------------------
+
+
+@main.group("auth")
+def auth_group() -> None:
+    """Manage PitchBook authentication."""
+
+
+@auth_group.command("status")
+def auth_status_cmd() -> None:
+    """Show the current authentication configuration."""
+    settings = _settings_from_ctx()
+    console.print(f"[bold]Auth mode:[/bold] {settings.auth_mode.value}")
+    if settings.api_key:
+        masked = settings.api_key[:4] + "..." + settings.api_key[-4:]
+        console.print(f"  API key:      {masked}")
+    else:
+        console.print("  API key:      [dim]not set[/dim]")
+    console.print(f"  API base URL: {settings.api_base_url}")
+    console.print(f"  Web base URL: {settings.web_base_url}")
+
+
+@auth_group.command("test")
+def auth_test_cmd() -> None:
+    """Test authentication by making a simple API request."""
+    from pitchbook.client import PitchBookClient
+
+    settings = _settings_from_ctx()
+
+    async def _run() -> None:
+        async with PitchBookClient(settings) as client:
+            try:
+                results = await client.search_companies("test", limit=1)
+                console.print("[bold green]Authentication successful![/bold green]")
+                console.print(f"  Mode: {client._auth_mode.value}")
+                if results:
+                    console.print(f"  Sample result: {results[0].name}")
+            except Exception as exc:
+                console.print(f"[bold red]Authentication failed:[/bold red] {exc}")
+
+    asyncio.run(_run())
+
+
+@auth_group.command("cookies")
+def auth_cookies_cmd() -> None:
+    """Show PitchBook cookies found in Chrome (names only)."""
+    from pitchbook.cookies import CookieExtractionError, extract_pitchbook_cookies
+
+    try:
+        cookies = extract_pitchbook_cookies()
+        console.print(f"[bold green]Found {len(cookies)} PitchBook cookies:[/bold green]")
+        for name in sorted(cookies):
+            console.print(f"  - {name}")
+    except CookieExtractionError as exc:
+        console.print(f"[bold red]Cookie extraction failed:[/bold red] {exc}")
+
+
+@auth_group.command("probe")
+def auth_probe_cmd() -> None:
+    """Discover which API endpoints work with cookie authentication.
+
+    Tries several known URL patterns to determine the correct base URL
+    for cookie-based access.
+    """
+    import httpx as _httpx
+
+    from pitchbook.cookies import (
+        CookieExtractionError,
+        cookies_to_httpx,
+        extract_pitchbook_cookies,
+    )
+
+    try:
+        cookie_dict = extract_pitchbook_cookies()
+    except CookieExtractionError as exc:
+        console.print(f"[bold red]Cookie extraction failed:[/bold red] {exc}")
+        return
+
+    cookies = cookies_to_httpx(cookie_dict)
+
+    candidate_bases = [
+        "https://api.pitchbook.com/v2",
+        "https://pitchbook.com/api/v2",
+        "https://pitchbook.com/api",
+        "https://pitchbook.com",
+    ]
+    test_path = "/companies/search"
+    test_params = {"q": "test", "limit": "1"}
+
+    async def _probe() -> None:
+        for base in candidate_bases:
+            url = base + test_path
+            console.print(f"  Trying {url}...", end=" ")
+            try:
+                async with _httpx.AsyncClient(
+                    cookies=cookies,
+                    headers={"Accept": "application/json"},
+                    timeout=10,
+                    follow_redirects=True,
+                ) as http:
+                    resp = await http.get(url, params=test_params)
+                    if resp.status_code == 200:
+                        console.print(f"[green]OK ({resp.status_code})[/green]")
+                        try:
+                            data = resp.json()
+                            console.print(f"    Response keys: {list(data.keys())}")
+                        except Exception:
+                            console.print("    [dim]Non-JSON response[/dim]")
+                    else:
+                        console.print(f"[yellow]{resp.status_code}[/yellow]")
+            except Exception as exc:
+                console.print(f"[red]Error: {exc}[/red]")
+
+    console.print("[bold]Probing PitchBook endpoints with cookies...[/bold]\n")
+    asyncio.run(_probe())
 
 
 if __name__ == "__main__":

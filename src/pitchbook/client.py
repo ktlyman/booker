@@ -13,7 +13,7 @@ from tenacity import (
     wait_exponential,
 )
 
-from pitchbook.config import Settings
+from pitchbook.config import AuthMode, Settings
 from pitchbook.models import Company, CompanyStatus, Deal, DealType, Fund, Investor, Person
 
 logger = logging.getLogger(__name__)
@@ -28,23 +28,82 @@ class PitchBookAPIError(Exception):
         super().__init__(f"PitchBook API error {status_code}: {detail}")
 
 
+class PitchBookAuthError(PitchBookAPIError):
+    """Raised when authentication fails (expired cookies, bad API key)."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(401, detail)
+
+
 class PitchBookClient:
     """Async client wrapping the PitchBook REST API v2.
 
-    Handles authentication, pagination, rate-limit back-off, and
-    deserialization into Pydantic models.
+    Handles authentication (API key or Chrome cookies), pagination,
+    rate-limit back-off, and deserialization into Pydantic models.
     """
 
     def __init__(self, settings: Settings | None = None) -> None:
-        self._settings = settings or Settings()  # type: ignore[call-arg]
-        self._http = httpx.AsyncClient(
-            base_url=self._settings.api_base_url,
-            headers={
-                "Authorization": f"PitchBook {self._settings.api_key}",
-                "Accept": "application/json",
-            },
+        self._settings = settings or Settings()
+        self._auth_mode = self._resolve_auth_mode()
+        self._http = self._build_http_client()
+
+    def _resolve_auth_mode(self) -> AuthMode:
+        """Determine which auth mode to actually use."""
+        mode = self._settings.auth_mode
+        if mode == AuthMode.AUTO:
+            if self._settings.api_key:
+                logger.info("Auth mode: API key (auto-detected)")
+                return AuthMode.API_KEY
+            logger.info("Auth mode: Chrome cookies (no API key found)")
+            return AuthMode.COOKIES
+        return mode
+
+    def _build_http_client(self) -> httpx.AsyncClient:
+        """Construct the httpx client with appropriate auth config."""
+        if self._auth_mode == AuthMode.API_KEY:
+            return httpx.AsyncClient(
+                base_url=self._settings.api_base_url,
+                headers={
+                    "Authorization": f"PitchBook {self._settings.api_key}",
+                    "Accept": "application/json",
+                },
+                timeout=httpx.Timeout(self._settings.api_timeout),
+            )
+
+        from pitchbook.cookies import cookies_to_httpx, extract_pitchbook_cookies
+
+        cookie_dict = extract_pitchbook_cookies()
+        cookies = cookies_to_httpx(cookie_dict)
+
+        headers: dict[str, str] = {
+            "Accept": "application/json",
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/131.0.0.0 Safari/537.36"
+            ),
+            "X-Requested-With": "XMLHttpRequest",
+        }
+
+        csrf = cookie_dict.get("csrftoken", "")
+        if csrf:
+            headers["X-CSRFToken"] = csrf
+
+        return httpx.AsyncClient(
+            base_url=self._settings.web_base_url,
+            cookies=cookies,
+            headers=headers,
             timeout=httpx.Timeout(self._settings.api_timeout),
+            follow_redirects=True,
         )
+
+    async def _refresh_cookies(self) -> None:
+        """Re-extract cookies from Chrome and update the HTTP client."""
+        from pitchbook.cookies import cookies_to_httpx, extract_pitchbook_cookies
+
+        logger.info("Refreshing PitchBook cookies from Chrome...")
+        cookie_dict = extract_pitchbook_cookies()
+        self._http.cookies = cookies_to_httpx(cookie_dict)
 
     async def close(self) -> None:
         await self._http.aclose()
@@ -67,6 +126,18 @@ class PitchBookClient:
     )
     async def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         resp = await self._http.request(method, path, **kwargs)
+
+        # Handle auth failures with cookie refresh
+        if resp.status_code in (401, 403) and self._auth_mode == AuthMode.COOKIES:
+            logger.warning("Auth failed (HTTP %d), refreshing cookies...", resp.status_code)
+            await self._refresh_cookies()
+            resp = await self._http.request(method, path, **kwargs)
+            if resp.status_code in (401, 403):
+                raise PitchBookAuthError(
+                    "Authentication failed after cookie refresh. "
+                    "Please log into pitchbook.com in Chrome."
+                )
+
         if resp.status_code == 429:
             retry_after = int(resp.headers.get("Retry-After", "5"))
             logger.warning("Rate limited by PitchBook, retry after %ds", retry_after)

@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class AuthMode(StrEnum):
+    AUTO = "auto"
+    API_KEY = "api_key"
+    COOKIES = "cookies"
 
 
 class Settings(BaseSettings):
@@ -17,11 +24,21 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
     )
 
+    # Authentication
+    auth_mode: AuthMode = Field(
+        default=AuthMode.AUTO,
+        description="Auth method: 'auto' (try key then cookies), 'api_key', or 'cookies'",
+    )
+
     # PitchBook API
-    api_key: str = Field(description="PitchBook API key")
+    api_key: str = Field(default="", description="PitchBook API key")
     api_base_url: str = Field(
         default="https://api.pitchbook.com/v2",
         description="PitchBook API v2 base URL",
+    )
+    web_base_url: str = Field(
+        default="https://pitchbook.com",
+        description="PitchBook website base URL (used for cookie-based auth)",
     )
     api_timeout: int = Field(default=30, description="API request timeout in seconds")
     api_max_retries: int = Field(default=3, description="Max retries for failed API calls")
@@ -44,3 +61,13 @@ class Settings(BaseSettings):
         default="claude-sonnet-4-20250514",
         description="Claude model to use for agent query synthesis",
     )
+
+    @model_validator(mode="after")
+    def validate_auth_config(self) -> Settings:
+        """Ensure a valid auth method is available."""
+        if self.auth_mode == AuthMode.API_KEY and not self.api_key:
+            raise ValueError(
+                "PITCHBOOK_API_KEY is required when auth_mode='api_key'. "
+                "Set PITCHBOOK_AUTH_MODE='cookies' to use Chrome cookies instead."
+            )
+        return self

@@ -15,9 +15,10 @@ Booker (package name: `pitchbook-listener`) is a PitchBook data integration tool
 
 ```
 src/pitchbook/       # All source code
-  config.py          # Pydantic settings (env vars)
+  config.py          # Pydantic settings (env vars), AuthMode enum
   models.py          # Pydantic data models
-  client.py          # PitchBook API async client
+  client.py          # PitchBook API async client (API key + cookie auth)
+  cookies.py         # Chrome cookie extraction via rookiepy
   store.py           # SQLAlchemy/SQLite persistence
   listener.py        # Change detection polling
   importer.py        # Bulk data import
@@ -34,6 +35,9 @@ tests/               # pytest test suite
 # Install with dev dependencies
 pip install -e ".[dev]"
 
+# Install with cookie auth support only
+pip install -e ".[cookies]"
+
 # Run tests
 pytest tests/ -v --tb=short
 
@@ -47,13 +51,25 @@ mypy src/
 pitchbook --help
 ```
 
+## Authentication
+
+Two auth modes (set via `PITCHBOOK_AUTH_MODE` or `--auth` flag):
+
+- **api_key** — uses `PITCHBOOK_API_KEY` with PitchBook API v2
+- **cookies** — extracts session cookies from Chrome (requires `rookiepy`)
+- **auto** (default) — uses API key if set, otherwise falls back to cookies
+
+Useful commands: `pitchbook auth status`, `pitchbook auth test`, `pitchbook auth cookies`, `pitchbook auth probe`
+
 ## Environment Variables
 
-Required env vars (see `.env.examples`):
-- `PITCHBOOK_API_KEY` - PitchBook API key
+Required (at least one auth method):
+- `PITCHBOOK_API_KEY` - PitchBook API key (required for `api_key` mode)
 - `PITCHBOOK_ANTHROPIC_API_KEY` - Anthropic API key (for query interface)
 
 Optional:
+- `PITCHBOOK_AUTH_MODE` - Auth mode: `auto`, `api_key`, or `cookies` (default: `auto`)
+- `PITCHBOOK_WEB_BASE_URL` - PitchBook website URL for cookie auth (default: `https://pitchbook.com`)
 - `PITCHBOOK_DB_PATH` - SQLite database path (default: `pitchbook_data.db`)
 - `PITCHBOOK_POLL_INTERVAL_SECONDS` - Listener poll interval (default: `300`)
 - `PITCHBOOK_CLAUDE_MODEL` - Claude model to use (default: `claude-sonnet-4-20250514`)
