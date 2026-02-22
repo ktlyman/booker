@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master, "claude/**"]
+    paths:
+      - 'CLAUDE.md'
+      - '.claude/**'
+      - '.claude-lint.json'
+      - 'pitchbook/**'
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  claude-md-lint:
+    name: claude-md-lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npx claude-md-lint@1 . --fail-under 80
+      - name: Upload SARIF (PR only)
+        if: always() && github.event_name == 'pull_request'
+        run: npx claude-md-lint@1 . --sarif > results.sarif
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always() && github.event_name == 'pull_request'
+        with:
+          sarif_file: results.sarif
+
+  python-checks:
+    name: Python Checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pitchbook
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Lint with ruff
+        run: ruff check src/ tests/
+
+      - name: Type check with mypy
+        run: mypy src/
+
+      - name: Run tests
+        run: pytest tests/ -v --tb=short

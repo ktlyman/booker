@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PitchBook Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #242834;
+    --border: #2e3344;
+    --text: #e1e4ed;
+    --text-dim: #8b8fa3;
+    --accent: #6c8cff;
+    --accent-hover: #8ba3ff;
+    --green: #4ade80;
+    --yellow: #fbbf24;
+    --red: #f87171;
+    --cyan: #22d3ee;
+    --radius: 8px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+  }
+
+  /* Layout */
+  .shell { display: flex; min-height: 100vh; }
+  nav {
+    width: 220px;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    padding: 24px 0;
+    flex-shrink: 0;
+  }
+  nav h1 {
+    font-size: 16px;
+    padding: 0 20px 20px;
+    border-bottom: 1px solid var(--border);
+    color: var(--accent);
+    font-weight: 700;
+    letter-spacing: 0.5px;
+  }
+  nav a {
+    display: block;
+    padding: 10px 20px;
+    color: var(--text-dim);
+    text-decoration: none;
+    font-size: 14px;
+    transition: all 0.15s;
+    cursor: pointer;
+  }
+  nav a:hover, nav a.active {
+    color: var(--text);
+    background: var(--surface2);
+  }
+  nav a.active { border-left: 3px solid var(--accent); }
+  main { flex: 1; padding: 32px; max-width: 1100px; }
+
+  /* Cards */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    margin-bottom: 16px;
+  }
+  .card h2 {
+    font-size: 14px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 12px;
+  }
+
+  /* Stats row */
+  .stats { display: flex; gap: 16px; margin-bottom: 24px; }
+  .stat {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px 24px;
+    flex: 1;
+  }
+  .stat .value { font-size: 28px; font-weight: 700; color: var(--accent); }
+  .stat .label { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
+
+  /* Tables */
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th {
+    text-align: left;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-dim);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 600;
+  }
+  td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  tr:hover td { background: var(--surface2); }
+  .clickable { cursor: pointer; }
+
+  /* Badges */
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+  .badge-active { background: #16382b; color: var(--green); }
+  .badge-public { background: #1a2744; color: var(--accent); }
+  .badge-acquired { background: #3b2a14; color: var(--yellow); }
+  .badge-inactive { background: #331a1a; color: var(--red); }
+  .badge-merged { background: #2a2040; color: #c084fc; }
+
+  /* Forms */
+  input, select {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 12px;
+    border-radius: var(--radius);
+    font-size: 14px;
+    outline: none;
+    transition: border 0.15s;
+  }
+  input:focus { border-color: var(--accent); }
+  input::placeholder { color: var(--text-dim); }
+  .search-bar {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 20px;
+  }
+  .search-bar input { flex: 1; }
+
+  /* Buttons */
+  button, .btn {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    padding: 8px 16px;
+    border-radius: var(--radius);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  button:hover { background: var(--accent-hover); }
+  .btn-sm { padding: 4px 10px; font-size: 12px; }
+  .btn-danger { background: #dc2626; }
+  .btn-danger:hover { background: #ef4444; }
+  .btn-ghost {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+  }
+  .btn-ghost:hover { background: var(--surface2); color: var(--text); }
+
+  /* Misc */
+  .money { color: var(--green); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .dim { color: var(--text-dim); }
+  .page-title { font-size: 22px; font-weight: 700; margin-bottom: 24px; }
+  .empty {
+    text-align: center;
+    padding: 40px;
+    color: var(--text-dim);
+    font-size: 14px;
+  }
+  .change-item {
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 14px;
+  }
+  .change-item:last-child { border-bottom: none; }
+  .change-time { color: var(--text-dim); font-size: 12px; margin-right: 8px; }
+  .change-type {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 11px;
+    margin-right: 6px;
+    background: var(--surface2);
+    color: var(--cyan);
+  }
+  .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .detail-field .label { font-size: 12px; color: var(--text-dim); margin-bottom: 2px; }
+  .detail-field .value { font-size: 15px; }
+  .back-link { color: var(--accent); cursor: pointer; font-size: 13px; margin-bottom: 16px; display: inline-block; }
+  .back-link:hover { text-decoration: underline; }
+
+  /* Add-watch form */
+  .watch-form { display: flex; gap: 8px; margin-bottom: 16px; }
+  .watch-form input { flex: 1; }
+
+  /* View toggle hidden */
+  .view { display: none; }
+  .view.active { display: block; }
+
+  /* Responsive */
+  @media (max-width: 768px) {
+    .shell { flex-direction: column; }
+    nav { width: 100%; display: flex; overflow-x: auto; padding: 0; border-right: none; border-bottom: 1px solid var(--border); }
+    nav h1 { display: none; }
+    nav a { white-space: nowrap; padding: 12px 16px; border-left: none !important; }
+    nav a.active { border-bottom: 2px solid var(--accent); }
+    main { padding: 16px; }
+    .stats { flex-direction: column; }
+    .detail-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <nav>
+    <h1>PitchBook</h1>
+    <a onclick="showView('dashboard')" id="nav-dashboard" class="active">Dashboard</a>
+    <a onclick="showView('companies')" id="nav-companies">Companies</a>
+    <a onclick="showView('watchlist')" id="nav-watchlist">Watch List</a>
+    <a onclick="showView('changes')" id="nav-changes">Changes</a>
+    <a onclick="showView('search')" id="nav-search">Search</a>
+  </nav>
+
+  <main>
+    <!-- ============== DASHBOARD ============== -->
+    <div id="view-dashboard" class="view active">
+      <div class="page-title">Dashboard</div>
+      <div class="stats">
+        <div class="stat">
+          <div class="value" id="stat-companies">—</div>
+          <div class="label">Companies Stored</div>
+        </div>
+        <div class="stat">
+          <div class="value" id="stat-watched">—</div>
+          <div class="label">Companies Watched</div>
+        </div>
+        <div class="stat">
+          <div class="value" id="stat-changes">—</div>
+          <div class="label">Recent Changes</div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Recent Activity</h2>
+        <div id="dashboard-changes"><div class="empty">Loading...</div></div>
+      </div>
+    </div>
+
+    <!-- ============== COMPANIES ============== -->
+    <div id="view-companies" class="view">
+      <div class="page-title">Companies</div>
+      <div class="search-bar">
+        <input type="text" id="company-search" placeholder="Search companies..." onkeyup="handleCompanySearch(event)">
+        <button onclick="doCompanySearch()">Search</button>
+        <button class="btn-ghost" onclick="loadAllCompanies()">Show All</button>
+      </div>
+      <div class="card">
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Status</th>
+              <th>Industry</th>
+              <th>HQ</th>
+              <th>Total Raised</th>
+            </tr>
+          </thead>
+          <tbody id="companies-body">
+            <tr><td colspan="5" class="empty">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ============== COMPANY DETAIL ============== -->
+    <div id="view-company-detail" class="view">
+      <span class="back-link" onclick="showView('companies')">&larr; Back to Companies</span>
+      <div class="page-title" id="detail-name">—</div>
+      <div class="card">
+        <h2>Profile</h2>
+        <div class="detail-grid" id="detail-profile"></div>
+      </div>
+      <div class="card">
+        <h2>Financing History</h2>
+        <table>
+          <thead>
+            <tr><th>Date</th><th>Type</th><th>Size</th><th>Lead Investors</th></tr>
+          </thead>
+          <tbody id="detail-deals">
+            <tr><td colspan="4" class="empty">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h2>Key People</h2>
+        <table>
+          <thead>
+            <tr><th>Name</th><th>Title</th></tr>
+          </thead>
+          <tbody id="detail-people">
+            <tr><td colspan="2" class="empty">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ============== WATCH LIST ============== -->
+    <div id="view-watchlist" class="view">
+      <div class="page-title">Watch List</div>
+      <div class="card">
+        <h2>Add Company to Watch</h2>
+        <div class="watch-form">
+          <input type="text" id="watch-id" placeholder="PitchBook ID (e.g. C-12345)">
+          <input type="text" id="watch-name" placeholder="Company Name">
+          <button onclick="addWatched()">Add</button>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Watched Companies</h2>
+        <table>
+          <thead>
+            <tr><th>PitchBook ID</th><th>Name</th><th></th></tr>
+          </thead>
+          <tbody id="watchlist-body">
+            <tr><td colspan="3" class="empty">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ============== CHANGES ============== -->
+    <div id="view-changes" class="view">
+      <div class="page-title">Change Log</div>
+      <div class="card">
+        <div id="changes-list"><div class="empty">Loading...</div></div>
+      </div>
+    </div>
+
+    <!-- ============== SEARCH ============== -->
+    <div id="view-search" class="view">
+      <div class="page-title">Search All Data</div>
+      <div class="search-bar">
+        <input type="text" id="global-search" placeholder="Search companies, investors, deals, people..." onkeyup="handleGlobalSearch(event)">
+        <button onclick="doGlobalSearch()">Search</button>
+      </div>
+      <div id="search-results"></div>
+    </div>
+  </main>
+</div>
+
+<script>
+// ---------------------------------------------------------------------------
+// API helpers
+// ---------------------------------------------------------------------------
+async function api(path) {
+  const res = await fetch(path);
+  if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
+  return res.json();
+}
+async function apiPost(path, body) {
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
+  return res.json();
+}
+async function apiDelete(path) {
+  const res = await fetch(path, {method: 'DELETE'});
+  if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
+  return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// Formatting
+// ---------------------------------------------------------------------------
+function fmtMoney(v) {
+  if (v == null) return '<span class="dim">—</span>';
+  if (v >= 1e9) return `<span class="money">$${(v/1e9).toFixed(1)}B</span>`;
+  if (v >= 1e6) return `<span class="money">$${(v/1e6).toFixed(1)}M</span>`;
+  if (v >= 1e3) return `<span class="money">$${(v/1e3).toFixed(0)}K</span>`;
+  return `<span class="money">$${v.toFixed(0)}</span>`;
+}
+function fmtDate(d) { return d || '<span class="dim">—</span>'; }
+function fmtNum(n) { return n != null ? n.toLocaleString() : '<span class="dim">—</span>'; }
+function statusBadge(s) {
+  const cls = {active:'badge-active', public:'badge-public', acquired:'badge-acquired',
+               merged:'badge-merged', inactive:'badge-inactive'}[s] || 'badge-active';
+  return `<span class="badge ${cls}">${s}</span>`;
+}
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s || '';
+  return d.innerHTML;
+}
+
+// ---------------------------------------------------------------------------
+// Navigation
+// ---------------------------------------------------------------------------
+let currentView = 'dashboard';
+function showView(name) {
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  document.querySelectorAll('nav a').forEach(a => a.classList.remove('active'));
+  const viewEl = document.getElementById('view-' + name);
+  const navEl = document.getElementById('nav-' + name);
+  if (viewEl) viewEl.classList.add('active');
+  if (navEl) navEl.classList.add('active');
+  currentView = name;
+  if (name === 'dashboard') loadDashboard();
+  else if (name === 'companies') loadAllCompanies();
+  else if (name === 'watchlist') loadWatchlist();
+  else if (name === 'changes') loadChanges();
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard
+// ---------------------------------------------------------------------------
+async function loadDashboard() {
+  try {
+    const data = await api('/api/status');
+    document.getElementById('stat-companies').textContent = data.companies_stored;
+    document.getElementById('stat-watched').textContent = data.companies_watched;
+    document.getElementById('stat-changes').textContent = data.recent_changes.length;
+    renderChangesList('dashboard-changes', data.recent_changes);
+  } catch { /* ignore on first load */ }
+}
+
+// ---------------------------------------------------------------------------
+// Companies
+// ---------------------------------------------------------------------------
+function renderCompaniesTable(companies) {
+  const tbody = document.getElementById('companies-body');
+  if (!companies.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">No companies found.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = companies.map(c => `
+    <tr class="clickable" onclick="showCompanyDetail('${esc(c.pitchbook_id)}')">
+      <td><strong>${esc(c.name)}</strong></td>
+      <td>${statusBadge(c.status)}</td>
+      <td>${esc(c.primary_industry)}</td>
+      <td>${esc(c.hq_location)}</td>
+      <td>${fmtMoney(c.total_raised_usd)}</td>
+    </tr>
+  `).join('');
+}
+
+async function loadAllCompanies() {
+  const companies = await api('/api/companies');
+  renderCompaniesTable(companies);
+}
+
+function handleCompanySearch(e) { if (e.key === 'Enter') doCompanySearch(); }
+async function doCompanySearch() {
+  const q = document.getElementById('company-search').value.trim();
+  if (!q) return loadAllCompanies();
+  const companies = await api('/api/companies/search?q=' + encodeURIComponent(q));
+  renderCompaniesTable(companies);
+}
+
+// ---------------------------------------------------------------------------
+// Company Detail
+// ---------------------------------------------------------------------------
+async function showCompanyDetail(id) {
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  document.getElementById('view-company-detail').classList.add('active');
+
+  const [company, deals, people] = await Promise.all([
+    api('/api/companies/' + encodeURIComponent(id)),
+    api('/api/companies/' + encodeURIComponent(id) + '/deals'),
+    api('/api/companies/' + encodeURIComponent(id) + '/people'),
+  ]);
+
+  document.getElementById('detail-name').textContent = company.name;
+
+  const fields = [
+    ['Status', statusBadge(company.status)],
+    ['Industry', esc(company.primary_industry)],
+    ['Sector', esc(company.primary_sector)],
+    ['HQ', esc(company.hq_location)],
+    ['Website', company.website ? `<a href="${esc(company.website)}" target="_blank" style="color:var(--accent)">${esc(company.website)}</a>` : '—'],
+    ['Founded', fmtDate(company.founded_date)],
+    ['Employees', fmtNum(company.employee_count)],
+    ['Total Raised', fmtMoney(company.total_raised_usd)],
+    ['Last Financing', fmtDate(company.last_financing_date)],
+    ['Last Deal Type', esc(company.last_financing_deal_type)],
+    ['Last Deal Size', fmtMoney(company.last_financing_size_usd)],
+    ['Ownership', esc(company.ownership_status)],
+  ];
+  document.getElementById('detail-profile').innerHTML = fields.map(([l, v]) =>
+    `<div class="detail-field"><div class="label">${l}</div><div class="value">${v || '<span class="dim">—</span>'}</div></div>`
+  ).join('');
+
+  const dealsBody = document.getElementById('detail-deals');
+  if (!deals.length) {
+    dealsBody.innerHTML = '<tr><td colspan="4" class="empty">No deals recorded.</td></tr>';
+  } else {
+    dealsBody.innerHTML = deals.map(d => `
+      <tr>
+        <td>${fmtDate(d.deal_date)}</td>
+        <td><span class="badge badge-active">${esc(d.deal_type)}</span></td>
+        <td>${fmtMoney(d.deal_size_usd)}</td>
+        <td>${d.lead_investors.map(esc).join(', ') || '<span class="dim">—</span>'}</td>
+      </tr>
+    `).join('');
+  }
+
+  const peopleBody = document.getElementById('detail-people');
+  if (!people.length) {
+    peopleBody.innerHTML = '<tr><td colspan="2" class="empty">No people recorded.</td></tr>';
+  } else {
+    peopleBody.innerHTML = people.map(p => `
+      <tr>
+        <td>${esc(p.name)}</td>
+        <td>${esc(p.title)}</td>
+      </tr>
+    `).join('');
+  }
+
+  if (company.description) {
+    const profileDiv = document.getElementById('detail-profile');
+    profileDiv.innerHTML += `<div class="detail-field" style="grid-column:1/-1"><div class="label">Description</div><div class="value">${esc(company.description)}</div></div>`;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Watch List
+// ---------------------------------------------------------------------------
+async function loadWatchlist() {
+  const watched = await api('/api/watched');
+  const tbody = document.getElementById('watchlist-body');
+  if (!watched.length) {
+    tbody.innerHTML = '<tr><td colspan="3" class="empty">No companies being watched. Add one above.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = watched.map(w => `
+    <tr>
+      <td><code>${esc(w.pitchbook_id)}</code></td>
+      <td>${esc(w.name)}</td>
+      <td><button class="btn-sm btn-danger" onclick="removeWatched('${esc(w.pitchbook_id)}')">Remove</button></td>
+    </tr>
+  `).join('');
+}
+
+async function addWatched() {
+  const id = document.getElementById('watch-id').value.trim();
+  const name = document.getElementById('watch-name').value.trim();
+  if (!id || !name) return;
+  await apiPost('/api/watched', {pitchbook_id: id, name: name});
+  document.getElementById('watch-id').value = '';
+  document.getElementById('watch-name').value = '';
+  loadWatchlist();
+}
+
+async function removeWatched(id) {
+  await apiDelete('/api/watched/' + encodeURIComponent(id));
+  loadWatchlist();
+}
+
+// ---------------------------------------------------------------------------
+// Changes
+// ---------------------------------------------------------------------------
+function renderChangesList(containerId, changes) {
+  const el = document.getElementById(containerId);
+  if (!changes.length) {
+    el.innerHTML = '<div class="empty">No changes detected yet.</div>';
+    return;
+  }
+  el.innerHTML = changes.map(c => {
+    const t = c.detected_at ? new Date(c.detected_at).toLocaleString() : '';
+    return `<div class="change-item">
+      <span class="change-time">${t}</span>
+      <span class="change-type">${esc(c.change_type)}</span>
+      ${esc(c.summary)}
+    </div>`;
+  }).join('');
+}
+
+async function loadChanges() {
+  const changes = await api('/api/changes?limit=100');
+  renderChangesList('changes-list', changes);
+}
+
+// ---------------------------------------------------------------------------
+// Global Search
+// ---------------------------------------------------------------------------
+function handleGlobalSearch(e) { if (e.key === 'Enter') doGlobalSearch(); }
+
+async function doGlobalSearch() {
+  const q = document.getElementById('global-search').value.trim();
+  if (!q) return;
+  const results = await api('/api/search?q=' + encodeURIComponent(q));
+  const container = document.getElementById('search-results');
+
+  let html = '';
+  if (results.companies.length) {
+    html += '<div class="card"><h2>Companies</h2><table><thead><tr><th>ID</th><th>Name</th><th>Industry</th></tr></thead><tbody>';
+    html += results.companies.map(c =>
+      `<tr class="clickable" onclick="showCompanyDetail('${esc(c.id)}')"><td><code>${esc(c.id)}</code></td><td>${esc(c.name)}</td><td>${esc(c.industry)}</td></tr>`
+    ).join('');
+    html += '</tbody></table></div>';
+  }
+  if (results.investors.length) {
+    html += '<div class="card"><h2>Investors</h2><table><thead><tr><th>ID</th><th>Name</th><th>Type</th></tr></thead><tbody>';
+    html += results.investors.map(i =>
+      `<tr><td><code>${esc(i.id)}</code></td><td>${esc(i.name)}</td><td>${esc(i.type)}</td></tr>`
+    ).join('');
+    html += '</tbody></table></div>';
+  }
+  if (results.deals.length) {
+    html += '<div class="card"><h2>Deals</h2><table><thead><tr><th>ID</th><th>Company ID</th><th>Type</th></tr></thead><tbody>';
+    html += results.deals.map(d =>
+      `<tr><td><code>${esc(d.id)}</code></td><td><code>${esc(d.company_id)}</code></td><td>${esc(d.type)}</td></tr>`
+    ).join('');
+    html += '</tbody></table></div>';
+  }
+  if (results.people.length) {
+    html += '<div class="card"><h2>People</h2><table><thead><tr><th>ID</th><th>Name</th><th>Title</th></tr></thead><tbody>';
+    html += results.people.map(p =>
+      `<tr><td><code>${esc(p.id)}</code></td><td>${esc(p.name)}</td><td>${esc(p.title)}</td></tr>`
+    ).join('');
+    html += '</tbody></table></div>';
+  }
+  if (!html) html = '<div class="card"><div class="empty">No results found.</div></div>';
+  container.innerHTML = html;
+}
+
+// ---------------------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------------------
+loadDashboard();
+</script>
+</body>
+</html>
