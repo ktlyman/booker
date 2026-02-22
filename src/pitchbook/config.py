@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     api_timeout: int = Field(default=30, description="API request timeout in seconds")
     api_max_retries: int = Field(default=3, description="Max retries for failed API calls")
 
+    # Chrome profile for cookie extraction
+    chrome_profile: str = Field(
+        default="",
+        description="Chrome profile name (e.g. 'Profile 1'). Empty = try all profiles.",
+    )
+
     # Local data store
     db_path: Path = Field(
         default=Path("pitchbook_data.db"),

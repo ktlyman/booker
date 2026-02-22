@@ -72,7 +72,7 @@ class PitchBookClient:
 
         from pitchbook.cookies import cookies_to_httpx, extract_pitchbook_cookies
 
-        cookie_dict = extract_pitchbook_cookies()
+        cookie_dict = extract_pitchbook_cookies(self._settings.chrome_profile)
         cookies = cookies_to_httpx(cookie_dict)
 
         headers: dict[str, str] = {
@@ -102,7 +102,7 @@ class PitchBookClient:
         from pitchbook.cookies import cookies_to_httpx, extract_pitchbook_cookies
 
         logger.info("Refreshing PitchBook cookies from Chrome...")
-        cookie_dict = extract_pitchbook_cookies()
+        cookie_dict = extract_pitchbook_cookies(self._settings.chrome_profile)
         self._http.cookies = cookies_to_httpx(cookie_dict)
 
     async def close(self) -> None:

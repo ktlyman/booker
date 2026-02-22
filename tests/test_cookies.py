@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import time
-from types import ModuleType
+from http.cookiejar import Cookie
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -17,66 +17,89 @@ from pitchbook.cookies import (
 )
 
 
-def _mock_rookiepy(cookies: list[dict[str, object]]) -> ModuleType:
-    mod = MagicMock(spec=["chrome"])
+def _make_cookie(name: str, value: str) -> Cookie:
+    """Create a minimal http.cookiejar.Cookie for testing."""
+    return Cookie(
+        version=0, name=name, value=value,
+        port=None, port_specified=False,
+        domain=".pitchbook.com", domain_specified=True, domain_initial_dot=True,
+        path="/", path_specified=True,
+        secure=True, expires=None, discard=True,
+        comment=None, comment_url=None, rest={},
+    )
+
+
+def _mock_browser_cookie3(cookies: list[Cookie]) -> MagicMock:
+    """Create a mock browser_cookie3 module that returns the given cookies."""
+    mod = MagicMock()
     mod.chrome.return_value = cookies
     return mod
 
 
-def test_extract_cookies_no_rookiepy() -> None:
-    with patch.dict("sys.modules", {"rookiepy": None}):
-        with pytest.raises(CookieExtractionError, match="rookiepy is required"):
+@pytest.fixture()
+def _fake_profiles(tmp_path: Path) -> list[Path]:
+    """Create fake Chrome profile dirs with Cookies files."""
+    profiles = []
+    for name in ["Default", "Profile 1"]:
+        d = tmp_path / name
+        d.mkdir()
+        (d / "Cookies").touch()
+        profiles.append(d)
+    return profiles
+
+
+def test_extract_cookies_no_browser_cookie3() -> None:
+    with patch.dict("sys.modules", {"browser_cookie3": None}):
+        with pytest.raises(CookieExtractionError, match="browser_cookie3 is required"):
             extract_pitchbook_cookies()
 
 
 def test_extract_cookies_success() -> None:
-    mock = _mock_rookiepy([
-        {"name": "session_id", "value": "abc123", "expires": int(time.time()) + 3600},
-        {"name": "csrftoken", "value": "xyz789", "expires": 0},
+    mock = _mock_browser_cookie3([
+        _make_cookie("session_id", "abc123"),
+        _make_cookie("csrftoken", "xyz789"),
     ])
-    with patch.dict("sys.modules", {"rookiepy": mock}):
+    with (
+        patch.dict("sys.modules", {"browser_cookie3": mock}),
+        patch("pitchbook.cookies._chrome_profile_dirs") as mock_dirs,
+    ):
+        fake_dir = Path("/tmp/test-chrome/Default")
+        mock_dirs.return_value = [fake_dir]
+        # Create fake Cookies file
+        fake_dir.mkdir(parents=True, exist_ok=True)
+        (fake_dir / "Cookies").touch()
         cookies = extract_pitchbook_cookies()
     assert cookies == {"session_id": "abc123", "csrftoken": "xyz789"}
 
 
-def test_extract_cookies_filters_expired() -> None:
-    mock = _mock_rookiepy([
-        {"name": "old", "value": "stale", "expires": int(time.time()) - 3600},
-        {"name": "fresh", "value": "good", "expires": int(time.time()) + 3600},
-    ])
-    with patch.dict("sys.modules", {"rookiepy": mock}):
-        cookies = extract_pitchbook_cookies()
-    assert cookies == {"fresh": "good"}
-
-
-def test_extract_cookies_all_expired() -> None:
-    mock = _mock_rookiepy([
-        {"name": "old", "value": "stale", "expires": int(time.time()) - 3600},
-    ])
-    with patch.dict("sys.modules", {"rookiepy": mock}):
-        with pytest.raises(CookieExtractionError, match="expired"):
-            extract_pitchbook_cookies()
-
-
 def test_extract_cookies_none_found() -> None:
-    mock = _mock_rookiepy([])
-    with patch.dict("sys.modules", {"rookiepy": mock}):
+    mock = _mock_browser_cookie3([])
+    with (
+        patch.dict("sys.modules", {"browser_cookie3": mock}),
+        patch("pitchbook.cookies._chrome_profile_dirs") as mock_dirs,
+    ):
+        fake_dir = Path("/tmp/test-chrome-empty/Default")
+        mock_dirs.return_value = [fake_dir]
+        fake_dir.mkdir(parents=True, exist_ok=True)
+        (fake_dir / "Cookies").touch()
         with pytest.raises(CookieExtractionError, match="No cookies found"):
             extract_pitchbook_cookies()
 
 
-def test_extract_cookies_chrome_error() -> None:
-    mod = MagicMock(spec=["chrome"])
-    mod.chrome.side_effect = OSError("Chrome locked")
-    with patch.dict("sys.modules", {"rookiepy": mod}):
-        with pytest.raises(CookieExtractionError, match="Failed to extract"):
-            extract_pitchbook_cookies()
+def test_extract_cookies_specific_profile_not_found() -> None:
+    mock = _mock_browser_cookie3([])
+    with (
+        patch.dict("sys.modules", {"browser_cookie3": mock}),
+        patch("pitchbook.cookies._chrome_profile_dirs") as mock_dirs,
+    ):
+        mock_dirs.return_value = []
+        with pytest.raises(CookieExtractionError, match="not found"):
+            extract_pitchbook_cookies("NonExistent")
 
 
 def test_cookies_to_httpx() -> None:
     jar = cookies_to_httpx({"a": "1", "b": "2"})
     assert isinstance(jar, httpx.Cookies)
-    # Verify cookies are stored (httpx.Cookies doesn't have a simple len)
     names = {c.name for c in jar.jar}
     assert names == {"a", "b"}
 

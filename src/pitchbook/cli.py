@@ -346,8 +346,9 @@ def auth_cookies_cmd() -> None:
     """Show PitchBook cookies found in Chrome (names only)."""
     from pitchbook.cookies import CookieExtractionError, extract_pitchbook_cookies
 
+    settings = _settings_from_ctx()
     try:
-        cookies = extract_pitchbook_cookies()
+        cookies = extract_pitchbook_cookies(settings.chrome_profile)
         console.print(f"[bold green]Found {len(cookies)} PitchBook cookies:[/bold green]")
         for name in sorted(cookies):
             console.print(f"  - {name}")
@@ -370,8 +371,9 @@ def auth_probe_cmd() -> None:
         extract_pitchbook_cookies,
     )
 
+    settings = _settings_from_ctx()
     try:
-        cookie_dict = extract_pitchbook_cookies()
+        cookie_dict = extract_pitchbook_cookies(settings.chrome_profile)
     except CookieExtractionError as exc:
         console.print(f"[bold red]Cookie extraction failed:[/bold red] {exc}")
         return
