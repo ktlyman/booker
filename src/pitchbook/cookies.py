@@ -50,7 +50,7 @@ def extract_pitchbook_cookies(chrome_profile: str = "") -> dict[str, str]:
         chrome_profile: Chrome profile name (e.g. 'Profile 1' or 'Default').
             If empty, searches all profiles and uses the first one with cookies.
 
-    Returns a dict of cookie name -> value for pitchbook.com domain.
+    Returns a dict of cookie name -> value for all pitchbook.com subdomains.
 
     Raises:
         CookieExtractionError: If browser_cookie3 is not installed or Chrome
@@ -109,7 +109,12 @@ def extract_pitchbook_cookies(chrome_profile: str = "") -> dict[str, str]:
 def _extract_from_profile(
     browser_cookie3: Any, profile_dir: Path
 ) -> dict[str, str]:
-    """Extract PitchBook cookies from a specific Chrome profile."""
+    """Extract PitchBook cookies from a specific Chrome profile.
+
+    Extracts cookies from all pitchbook.com subdomains (including
+    my.pitchbook.com, get.pitchbook.com, etc.) to ensure we have
+    the full set needed for authentication.
+    """
     cookie_file = profile_dir / "Cookies"
     if not cookie_file.exists():
         return {}
@@ -125,7 +130,8 @@ def _extract_from_profile(
 
     cookies: dict[str, str] = {}
     for cookie in cj:
-        cookies[cookie.name] = cookie.value
+        if not cookie.is_expired():
+            cookies[cookie.name] = cookie.value
 
     logger.debug("Profile %s: %d PitchBook cookies", profile_dir.name, len(cookies))
     return cookies
@@ -141,7 +147,7 @@ def cookies_to_httpx(cookie_dict: dict[str, str]) -> httpx.Cookies:
 
 async def validate_cookies(
     http_client: httpx.AsyncClient,
-    validation_url: str = "https://pitchbook.com",
+    validation_url: str = "https://my.pitchbook.com/web-api/common/variables",
 ) -> bool:
     """Make a lightweight request to verify cookies are still valid.
 

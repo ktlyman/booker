@@ -37,7 +37,7 @@ class Settings(BaseSettings):
         description="PitchBook API v2 base URL",
     )
     web_base_url: str = Field(
-        default="https://pitchbook.com",
+        default="https://my.pitchbook.com",
         description="PitchBook website base URL (used for cookie-based auth)",
     )
     api_timeout: int = Field(default=30, description="API request timeout in seconds")

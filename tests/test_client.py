@@ -6,7 +6,13 @@ import httpx
 import pytest
 import respx
 
-from pitchbook.client import PitchBookAPIError, PitchBookClient, _parse_company, _parse_deal
+from pitchbook.client import (
+    PitchBookAPIError,
+    PitchBookClient,
+    _parse_company,
+    _parse_deal,
+    _parse_web_company,
+)
 from pitchbook.config import Settings
 from pitchbook.models import CompanyStatus, DealType
 
@@ -15,6 +21,7 @@ from pitchbook.models import CompanyStatus, DealType
 def client_settings(tmp_path) -> Settings:
     return Settings(
         api_key="test-key",
+        auth_mode="api_key",
         api_base_url="https://api.pitchbook.com/v2",
         db_path=tmp_path / "test.db",
         anthropic_api_key="test",
@@ -165,3 +172,58 @@ async def test_search_investors(client: PitchBookClient) -> None:
     assert len(results) == 1
     assert results[0].name == "Big VC"
     await client.close()
+
+
+# ---------------------------------------------------------------------------
+# Web API parser tests (cookie mode response format)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_web_company_full() -> None:
+    value = {
+        "profileResult": {
+            "id": "466959-97",
+            "name": "Anthropic",
+            "description": "AI safety company",
+            "typeDescription": "Private Company",
+            "location": "San Francisco, CA",
+        },
+        "sparseData": {
+            "ownershipStatus": "Privately Held (backing)",
+            "businessStatus": "Generating Revenue",
+            "financingStatus": "Venture Capital-Backed",
+            "primaryIndustry": "Business/Productivity Software",
+            "yearFounded": None,
+        },
+        "website": "www.anthropic.com",
+        "primaryIndustry": "Business/Productivity Software",
+    }
+    company = _parse_web_company(value)
+    assert company.pitchbook_id == "466959-97"
+    assert company.name == "Anthropic"
+    assert company.description == "AI safety company"
+    assert company.status == CompanyStatus.ACTIVE
+    assert company.website == "www.anthropic.com"
+    assert company.hq_location == "San Francisco, CA"
+    assert company.ownership_status == "Privately Held (backing)"
+    assert company.primary_industry == "Business/Productivity Software"
+
+
+def test_parse_web_company_minimal() -> None:
+    value = {
+        "profileResult": {"id": "123-45", "name": "TestCo"},
+        "sparseData": {},
+    }
+    company = _parse_web_company(value)
+    assert company.pitchbook_id == "123-45"
+    assert company.name == "TestCo"
+    assert company.status == CompanyStatus.ACTIVE
+
+
+def test_parse_web_company_acquired() -> None:
+    value = {
+        "profileResult": {"id": "999-01", "name": "AcquiredCo"},
+        "sparseData": {"businessStatus": "Acquired/Merged"},
+    }
+    company = _parse_web_company(value)
+    assert company.status == CompanyStatus.ACQUIRED

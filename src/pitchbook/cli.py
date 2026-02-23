@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+from typing import Any
 
 import click
 from rich.console import Console
@@ -358,16 +359,13 @@ def auth_cookies_cmd() -> None:
 
 @auth_group.command("probe")
 def auth_probe_cmd() -> None:
-    """Discover which API endpoints work with cookie authentication.
+    """Probe PitchBook web API endpoints with cookie authentication.
 
-    Tries several known URL patterns to determine the correct base URL
-    for cookie-based access.
+    Uses curl_cffi to bypass Cloudflare TLS fingerprinting and tests
+    the known web API endpoints used by the PitchBook SPA.
     """
-    import httpx as _httpx
-
     from pitchbook.cookies import (
         CookieExtractionError,
-        cookies_to_httpx,
         extract_pitchbook_cookies,
     )
 
@@ -378,43 +376,74 @@ def auth_probe_cmd() -> None:
         console.print(f"[bold red]Cookie extraction failed:[/bold red] {exc}")
         return
 
-    cookies = cookies_to_httpx(cookie_dict)
+    try:
+        from curl_cffi import (
+            requests as cffi_requests,  # type: ignore[import-untyped,import-not-found,unused-ignore]  # noqa: E501
+        )
+    except ImportError:
+        console.print(
+            "[bold red]curl_cffi is required for probing.[/bold red]\n"
+            "Install with: pip install curl_cffi"
+        )
+        return
 
-    candidate_bases = [
-        "https://api.pitchbook.com/v2",
-        "https://pitchbook.com/api/v2",
-        "https://pitchbook.com/api",
-        "https://pitchbook.com",
+    base = settings.web_base_url.rstrip("/")
+    endpoints: list[tuple[str, str, dict[str, Any] | None]] = [
+        ("GET", "/web-api/common/variables", None),
+        ("GET", "/web-api/system/alerts", None),
+        ("POST", "/web-api/general-search/search/mixed", {
+            "transcriptSearchAllowed": True,
+            "newsSearchAllowed": True,
+            "conferencesSearchAllowed": True,
+            "searchRequest": {"limit": 3, "offset": 0, "query": "test"},
+            "timeZoneOffset": "-08:00",
+            "isDealSearchAllowed": True,
+            "tprAllowed": True,
+        }),
+        ("GET", "/web-api/profiles/466959-97", None),
+        ("POST", "/web-api/session/refresh", None),
     ]
-    test_path = "/companies/search"
-    test_params = {"q": "test", "limit": "1"}
 
-    async def _probe() -> None:
-        for base in candidate_bases:
-            url = base + test_path
-            console.print(f"  Trying {url}...", end=" ")
-            try:
-                async with _httpx.AsyncClient(
-                    cookies=cookies,
-                    headers={"Accept": "application/json"},
-                    timeout=10,
-                    follow_redirects=True,
-                ) as http:
-                    resp = await http.get(url, params=test_params)
-                    if resp.status_code == 200:
-                        console.print(f"[green]OK ({resp.status_code})[/green]")
-                        try:
-                            data = resp.json()
-                            console.print(f"    Response keys: {list(data.keys())}")
-                        except Exception:
-                            console.print("    [dim]Non-JSON response[/dim]")
-                    else:
-                        console.print(f"[yellow]{resp.status_code}[/yellow]")
-            except Exception as exc:
-                console.print(f"[red]Error: {exc}[/red]")
+    console.print("[bold]Probing PitchBook web API with cookies + curl_cffi...[/bold]\n")
+    for method, path, body in endpoints:
+        url = base + path
+        console.print(f"  {method} {path}...", end=" ")
+        try:
+            kwargs: dict[str, Any] = {
+                "cookies": cookie_dict,
+                "impersonate": "chrome131",
+                "timeout": 10,
+                "allow_redirects": False,
+            }
+            if body is not None:
+                kwargs["json"] = body
+                kwargs["headers"] = {
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                }
+            else:
+                kwargs["headers"] = {"Accept": "application/json"}
 
-    console.print("[bold]Probing PitchBook endpoints with cookies...[/bold]\n")
-    asyncio.run(_probe())
+            resp = cffi_requests.request(method, url, **kwargs)
+
+            if resp.status_code == 200:
+                console.print(f"[green]OK ({resp.status_code})[/green]", end="")
+                try:
+                    data = resp.json()
+                    keys = list(data.keys()) if isinstance(data, dict) else [type(data).__name__]
+                    console.print(f"  keys={keys}")
+                except Exception:
+                    console.print(f"  [dim]{len(resp.text)} bytes[/dim]")
+            elif resp.status_code in (302, 303):
+                loc = resp.headers.get("location", "")
+                if "login" in loc.lower():
+                    console.print("[red]302 → login (session expired)[/red]")
+                else:
+                    console.print(f"[yellow]{resp.status_code} → {loc[:60]}[/yellow]")
+            else:
+                console.print(f"[yellow]{resp.status_code}[/yellow]")
+        except Exception as exc:
+            console.print(f"[red]Error: {exc}[/red]")
 
 
 if __name__ == "__main__":

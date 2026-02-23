@@ -1,7 +1,14 @@
-"""Async HTTP client for the PitchBook API v2."""
+"""Async HTTP client for the PitchBook API.
+
+Supports two authentication modes:
+- API key: Uses httpx against PitchBook API v2 (requires enterprise subscription)
+- Cookies: Uses curl_cffi against PitchBook's web API with Chrome session cookies
+  (bypasses Cloudflare TLS fingerprinting that blocks httpx)
+"""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -36,16 +43,25 @@ class PitchBookAuthError(PitchBookAPIError):
 
 
 class PitchBookClient:
-    """Async client wrapping the PitchBook REST API v2.
+    """Async client wrapping the PitchBook REST API.
 
     Handles authentication (API key or Chrome cookies), pagination,
     rate-limit back-off, and deserialization into Pydantic models.
+
+    In cookie mode, uses curl_cffi to bypass Cloudflare's TLS fingerprint
+    checks that block standard Python HTTP clients.
     """
 
     def __init__(self, settings: Settings | None = None) -> None:
         self._settings = settings or Settings()
         self._auth_mode = self._resolve_auth_mode()
-        self._http = self._build_http_client()
+        self._http: httpx.AsyncClient | None = None
+        self._cookies: dict[str, str] = {}
+
+        if self._auth_mode == AuthMode.API_KEY:
+            self._http = self._build_httpx_client()
+        else:
+            self._init_cookie_auth()
 
     def _resolve_auth_mode(self) -> AuthMode:
         """Determine which auth mode to actually use."""
@@ -58,55 +74,34 @@ class PitchBookClient:
             return AuthMode.COOKIES
         return mode
 
-    def _build_http_client(self) -> httpx.AsyncClient:
-        """Construct the httpx client with appropriate auth config."""
-        if self._auth_mode == AuthMode.API_KEY:
-            return httpx.AsyncClient(
-                base_url=self._settings.api_base_url,
-                headers={
-                    "Authorization": f"PitchBook {self._settings.api_key}",
-                    "Accept": "application/json",
-                },
-                timeout=httpx.Timeout(self._settings.api_timeout),
-            )
-
-        from pitchbook.cookies import cookies_to_httpx, extract_pitchbook_cookies
-
-        cookie_dict = extract_pitchbook_cookies(self._settings.chrome_profile)
-        cookies = cookies_to_httpx(cookie_dict)
-
-        headers: dict[str, str] = {
-            "Accept": "application/json",
-            "User-Agent": (
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/131.0.0.0 Safari/537.36"
-            ),
-            "X-Requested-With": "XMLHttpRequest",
-        }
-
-        csrf = cookie_dict.get("csrftoken", "")
-        if csrf:
-            headers["X-CSRFToken"] = csrf
-
+    def _build_httpx_client(self) -> httpx.AsyncClient:
+        """Construct the httpx client for API key auth."""
         return httpx.AsyncClient(
-            base_url=self._settings.web_base_url,
-            cookies=cookies,
-            headers=headers,
+            base_url=self._settings.api_base_url,
+            headers={
+                "Authorization": f"PitchBook {self._settings.api_key}",
+                "Accept": "application/json",
+            },
             timeout=httpx.Timeout(self._settings.api_timeout),
-            follow_redirects=True,
         )
 
-    async def _refresh_cookies(self) -> None:
-        """Re-extract cookies from Chrome and update the HTTP client."""
-        from pitchbook.cookies import cookies_to_httpx, extract_pitchbook_cookies
+    def _init_cookie_auth(self) -> None:
+        """Load cookies from Chrome for cookie-based auth."""
+        from pitchbook.cookies import extract_pitchbook_cookies
+
+        self._cookies = extract_pitchbook_cookies(self._settings.chrome_profile)
+        logger.info("Loaded %d PitchBook cookies from Chrome", len(self._cookies))
+
+    def _refresh_cookies(self) -> None:
+        """Re-extract cookies from Chrome."""
+        from pitchbook.cookies import extract_pitchbook_cookies
 
         logger.info("Refreshing PitchBook cookies from Chrome...")
-        cookie_dict = extract_pitchbook_cookies(self._settings.chrome_profile)
-        self._http.cookies = cookies_to_httpx(cookie_dict)
+        self._cookies = extract_pitchbook_cookies(self._settings.chrome_profile)
 
     async def close(self) -> None:
-        await self._http.aclose()
+        if self._http:
+            await self._http.aclose()
 
     async def __aenter__(self) -> PitchBookClient:
         return self
@@ -124,19 +119,10 @@ class PitchBookClient:
         wait=wait_exponential(multiplier=1, min=2, max=16),
         reraise=True,
     )
-    async def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+    async def _api_request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+        """Make a request via httpx (API key mode)."""
+        assert self._http is not None
         resp = await self._http.request(method, path, **kwargs)
-
-        # Handle auth failures with cookie refresh
-        if resp.status_code in (401, 403) and self._auth_mode == AuthMode.COOKIES:
-            logger.warning("Auth failed (HTTP %d), refreshing cookies...", resp.status_code)
-            await self._refresh_cookies()
-            resp = await self._http.request(method, path, **kwargs)
-            if resp.status_code in (401, 403):
-                raise PitchBookAuthError(
-                    "Authentication failed after cookie refresh. "
-                    "Please log into pitchbook.com in Chrome."
-                )
 
         if resp.status_code == 429:
             retry_after = int(resp.headers.get("Retry-After", "5"))
@@ -146,8 +132,101 @@ class PitchBookClient:
             raise PitchBookAPIError(resp.status_code, resp.text)
         return resp.json()  # type: ignore[no-any-return]
 
+    async def _web_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_body: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Make a request via curl_cffi (cookie mode).
+
+        Uses curl_cffi to impersonate Chrome's TLS fingerprint, which is
+        required to bypass Cloudflare protection on my.pitchbook.com.
+        Runs the sync curl_cffi call in a thread to stay async-compatible.
+        """
+        try:
+            from curl_cffi import (
+                requests as cffi_requests,  # type: ignore[import-untyped,import-not-found,unused-ignore]  # noqa: E501
+            )
+        except ImportError as exc:
+            raise PitchBookAPIError(
+                0,
+                "curl_cffi is required for cookie-based auth. "
+                "Install it with: pip install curl_cffi",
+            ) from exc
+
+        base_url = self._settings.web_base_url.rstrip("/")
+        url = f"{base_url}{path}"
+
+        def _do_request() -> Any:
+            kwargs: dict[str, Any] = {
+                "cookies": self._cookies,
+                "impersonate": "chrome131",
+                "timeout": self._settings.api_timeout,
+                "allow_redirects": False,
+            }
+            if json_body is not None:
+                kwargs["json"] = json_body
+                kwargs["headers"] = {
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                }
+            else:
+                kwargs["headers"] = {"Accept": "application/json"}
+            if params:
+                kwargs["params"] = params
+
+            return cffi_requests.request(method, url, **kwargs)
+
+        resp = await asyncio.to_thread(_do_request)
+
+        # Handle auth failures: 302 to login or 401
+        if resp.status_code in (302, 303, 307, 308):
+            location = resp.headers.get("location", "")
+            if "login" in location.lower():
+                # Try refreshing cookies once
+                logger.warning("Session expired (redirect to login), refreshing cookies...")
+                await asyncio.to_thread(self._refresh_cookies)
+                resp = await asyncio.to_thread(_do_request)
+                if resp.status_code in (302, 303, 307, 308):
+                    raise PitchBookAuthError(
+                        "Session expired after cookie refresh. "
+                        "Try closing and reopening Chrome, then retry. "
+                        "Chrome must flush session cookies to disk before they can be read."
+                    )
+
+        if resp.status_code == 401:
+            logger.warning("Auth failed (HTTP 401), refreshing cookies...")
+            await asyncio.to_thread(self._refresh_cookies)
+            resp = await asyncio.to_thread(_do_request)
+            if resp.status_code == 401:
+                raise PitchBookAuthError(
+                    "Authentication failed after cookie refresh. "
+                    "Try closing and reopening Chrome, then retry. "
+                    "Chrome must flush session cookies to disk before they can be read."
+                )
+
+        if resp.status_code == 429:
+            raise PitchBookAPIError(429, "Rate limited by Cloudflare or PitchBook")
+        if resp.status_code >= 400:
+            detail = resp.text[:200] if resp.text else f"HTTP {resp.status_code}"
+            raise PitchBookAPIError(resp.status_code, detail)
+
+        return resp.json()  # type: ignore[no-any-return]
+
     async def _get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        return await self._request("GET", path, params=params)
+        if self._auth_mode == AuthMode.API_KEY:
+            return await self._api_request("GET", path, params=params)
+        return await self._web_request("GET", path, params=params)
+
+    async def _post(
+        self, path: str, json_body: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        if self._auth_mode == AuthMode.API_KEY:
+            return await self._api_request("POST", path, json=json_body)
+        return await self._web_request("POST", path, json_body=json_body)
 
     async def _paginate(
         self, path: str, params: dict[str, Any] | None = None, max_pages: int = 50
@@ -167,6 +246,35 @@ class PitchBookClient:
         return all_items
 
     # ------------------------------------------------------------------
+    # Web API search (cookie mode)
+    # ------------------------------------------------------------------
+
+    async def _web_search(
+        self,
+        query: str,
+        *,
+        limit: int = 15,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """Execute a general search via the PitchBook web API."""
+        body = {
+            "transcriptSearchAllowed": True,
+            "newsSearchAllowed": True,
+            "conferencesSearchAllowed": True,
+            "searchRequest": {
+                "limit": limit,
+                "offset": offset,
+                "query": query,
+            },
+            "timeZoneOffset": "-08:00",
+            "isDealSearchAllowed": True,
+            "tprAllowed": True,
+        }
+        return await self._web_request(
+            "POST", "/web-api/general-search/search/mixed", json_body=body
+        )
+
+    # ------------------------------------------------------------------
     # Companies
     # ------------------------------------------------------------------
 
@@ -176,22 +284,74 @@ class PitchBookClient:
         *,
         limit: int = 25,
     ) -> list[Company]:
-        data = await self._get("/companies/search", params={"q": query, "limit": limit})
-        return [_parse_company(item) for item in data.get("items", data.get("results", []))]
+        if self._auth_mode == AuthMode.API_KEY:
+            data = await self._get(
+                "/companies/search", params={"q": query, "limit": limit}
+            )
+            return [
+                _parse_company(item)
+                for item in data.get("items", data.get("results", []))
+            ]
+
+        # Cookie mode: use web API general search
+        data = await self._web_search(query, limit=limit)
+        companies: list[Company] = []
+        for item in data.get("items", []):
+            if item.get("type") == "COMPANY":
+                companies.append(_parse_web_company(item["value"]))
+        return companies
 
     async def get_company(self, company_id: str) -> Company:
-        data = await self._get(f"/companies/{company_id}")
-        return _parse_company(data)
+        if self._auth_mode == AuthMode.API_KEY:
+            data = await self._get(f"/companies/{company_id}")
+            return _parse_company(data)
+
+        # Cookie mode: get profile info then search for the company
+        profile = await self._web_request(
+            "GET", f"/web-api/profiles/{company_id}"
+        )
+        name = ""
+        # Use the profile info to search for the company by ID
+        data = await self._web_search(company_id, limit=5)
+        for item in data.get("items", []):
+            if item.get("type") == "COMPANY":
+                pr = item["value"].get("profileResult", {})
+                if pr.get("id") == company_id:
+                    return _parse_web_company(item["value"])
+                if not name:
+                    name = pr.get("name", "")
+
+        # Fallback: return minimal company data from the profile endpoint
+        profile_types = profile.get("availableProfileTypes", [])
+        type_desc = ""
+        for pt in profile_types:
+            if pt.get("code") == "COMPANY":
+                type_desc = pt.get("description", "")
+                break
+        return Company(
+            pitchbook_id=company_id,
+            name=name or company_id,
+            description=type_desc,
+        )
 
     async def get_company_deals(self, company_id: str) -> list[Deal]:
+        if self._auth_mode != AuthMode.API_KEY:
+            logger.warning("get_company_deals not yet supported in cookie mode")
+            return []
         items = await self._paginate(f"/companies/{company_id}/deals")
         return [_parse_deal(item, company_id) for item in items]
 
     async def get_company_investors(self, company_id: str) -> list[Investor]:
+        if self._auth_mode != AuthMode.API_KEY:
+            logger.warning("get_company_investors not yet supported in cookie mode")
+            return []
         items = await self._paginate(f"/companies/{company_id}/investors")
         return [_parse_investor(item) for item in items]
 
     async def get_company_people(self, company_id: str) -> list[Person]:
+        if self._auth_mode != AuthMode.API_KEY:
+            logger.warning("get_company_people not yet supported in cookie mode")
+            return []
         items = await self._paginate(f"/companies/{company_id}/people")
         return [_parse_person(item) for item in items]
 
@@ -247,7 +407,7 @@ class PitchBookClient:
 
 
 # ---------------------------------------------------------------------------
-# Parsing helpers — map raw API JSON to Pydantic models
+# Parsing helpers — map raw API v2 JSON to Pydantic models
 # ---------------------------------------------------------------------------
 
 def _safe_date(value: Any) -> str | None:
@@ -279,6 +439,46 @@ def _parse_company(raw: dict[str, Any]) -> Company:
         last_financing_deal_type=raw.get("lastFinancingDealType", ""),
         last_financing_size_usd=raw.get("lastFinancingSize"),
         ownership_status=raw.get("ownershipStatus", ""),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Parsing helpers — map web API JSON to Pydantic models
+# ---------------------------------------------------------------------------
+
+def _parse_web_company(value: dict[str, Any]) -> Company:
+    """Parse a company from PitchBook web API search results.
+
+    The web API returns a nested structure:
+    {
+        "profileResult": {"id", "name", "description", "location", ...},
+        "sparseData": {"ownershipStatus", "businessStatus", "primaryIndustry", ...},
+        "website": "...",
+        ...
+    }
+    """
+    pr = value.get("profileResult", {})
+    sd = value.get("sparseData", {})
+
+    status_map = {
+        "Generating Revenue": CompanyStatus.ACTIVE,
+        "Operating": CompanyStatus.ACTIVE,
+        "Startup": CompanyStatus.ACTIVE,
+        "Acquired/Merged": CompanyStatus.ACQUIRED,
+        "Went Public": CompanyStatus.PUBLIC,
+        "Out of Business": CompanyStatus.INACTIVE,
+    }
+
+    return Company(
+        pitchbook_id=pr.get("id", ""),
+        name=pr.get("name", ""),
+        description=pr.get("description", ""),
+        status=status_map.get(sd.get("businessStatus", ""), CompanyStatus.ACTIVE),
+        website=value.get("website", ""),
+        founded_date=_safe_date(sd.get("yearFounded")),
+        primary_industry=sd.get("primaryIndustry") or value.get("primaryIndustry", ""),
+        hq_location=pr.get("location", ""),
+        ownership_status=sd.get("ownershipStatus", ""),
     )
 
 
